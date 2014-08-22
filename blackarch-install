@@ -1,0 +1,571 @@
+#!/bin/bash
+################################################################################
+#                                                                              #
+# blackarchinstall - Blackarch Install                                         #
+#                                                                              #
+# FILE                                                                         #
+# blackarchinstall.sh                                                          #
+#                                                                              #
+# DATE                                                                         #
+# 2013-12-16                                                                   #
+#                                                                              #
+# DESCRIPTION                                                                  #
+# Script for easy install                                                      #
+#                                                                              #
+# AUTHOR                                                                       #
+# nrz@nullsecurity.net                                                         #
+#                                                                              #
+# CONTRIBUTORS                                                                 #
+# pierre@pi3rrot.net                                                           #
+#                                                                              #
+################################################################################
+
+# SECURITY VAR - for beta version that can rm -rf /* your hard drive
+SEC_ENABLE="false"
+
+
+# root variable
+ROOT="/mnt/blackarch"
+
+# Partition CONST
+PART_AUTO="1"
+PART_MANUAL="2"
+
+# Menu CONST
+MENU_LIVE="1"
+MENU_REPO="2"
+MENU_BLACKMAN="3"
+
+# Set up defaults partitioning vars
+boot_type="ext2"
+boot_size="100MB"
+swap_size="1024MB"
+root_type="ext4"
+root_size="10GB"
+
+# luks global var
+LUKS="false"
+
+# swap global var
+SWAP="false"
+
+# blackarchinstall version
+VERSION="v0.7.4"
+
+# true / false
+FALSE="0"
+TRUE="1"
+
+# return codes
+SUCCESS="1337"
+FAILURE="31337"
+
+# verbose mode - default: quiet
+VERBOSE="/dev/null"
+
+# colors
+WHITE="$(tput bold ; tput setaf 7)"
+GREEN="$(tput setaf 2)"
+RED="$(tput bold; tput setaf 1)"
+YELLOW="$(tput bold ; tput setaf 3)"
+NC="$(tput sgr0)" # No Color
+
+
+wprintf() {
+    fmt=$1
+    shift
+    printf "%s${fmt}%s\n" "${WHITE}" "$@" "${NC}"
+
+    return "${SUCCESS}"
+}
+
+# print warning
+warn()
+{
+    fmt=${1}
+    shift
+    printf "%s[!] WARNING: ${fmt}%s\n" "${RED}" "${@}" "${NC}"
+
+    return "${SUCCESS}"
+}
+
+# print error and exit
+err()
+{
+    fmt=${1}
+    shift
+    printf "%s[-] ERROR: ${fmt}%s\n" "${RED}" "${@}" "${NC}"
+
+    return "${FAILURE}"
+}
+
+# print error and exit
+cri()
+{
+    fmt=${1}
+    shift
+    printf "%s[-] CRITICAL: ${fmt}%s\n" "${RED}" "${@}" "${NC}"
+
+    exit "${FAILURE}"
+}
+
+
+# usage and help
+usage()
+{
+cat <<EOF
+Usage: $0 <arg> | <misc>
+MISC:
+    -V: print version and exit
+    -H: print help and exit
+EOF
+    return "${SUCCESS}"
+}
+
+# leet banner, very important
+banner()
+{
+    printf "%s--==[ BlackArch Install %s ]==--%s\n" "${YELLOW}" "${VERSION}" "${NC}"
+
+    return "${SUCCESS}"
+}
+
+check_env()
+{
+    if [ -f /var/lib/pacman/db.lck ]; then
+        cri "Pacman locked - rm /var/lib/pacman/db.lck"
+    fi
+}
+
+# check argument count
+check_argc()
+{
+    return "${SUCCESS}"
+}
+
+# check if required arguments were selected
+check_args()
+{
+    return "${SUCCESS}"
+}
+
+
+update_system()
+{
+    if [ "$(uname -m)" == "x86_64" ]; then
+        if grep -q "#\[multilib\]" /etc/pacman.conf; then
+            # it exist but commented
+            wprintf "[+] Uncommenting multilib in /etc/pacman.conf..."
+            sed -i '/\[multilib\]/{ s/^#//; n; s/^#//; }' /etc/pacman.conf
+        elif ! grep -q "\[multilib\]" /etc/pacman.conf; then
+            # it does not exist at all
+            wprintf "[+] Enabling multilib in /etc/pacman.conf..."
+            printf "[multilib]\nInclude = /etc/pacman.d/mirrorlist\n" >> /etc/pacman.conf
+        fi
+    fi
+
+    pacman -Syy --noconfirm "${LIVE+-u}"
+
+    return "${SUCCESS}"
+}
+
+set_keymaps()
+{
+    printf "%s" "${WHITE}"
+
+    locale-gen &> /dev/null
+
+    while true; do
+        printf "    1. Set keymaps.\n"
+        printf "    2. See available keymaps.\n"
+        printf "Select: "; read keymaps_opt
+        [ "${keymaps_opt}" == "1" ] && break
+        if [ "${keymaps_opt}" == "2" ]; then
+            printf "%s" "${NC}"
+            localectl list-keymaps
+            clear
+            printf "%s" "${WHITE}"
+        fi
+    done
+
+    printf " -> Set keymaps [us]: "
+    read keymaps
+
+    [ "${keymaps}" == "" ] && keymaps="us"
+
+    localectl set-keymap --no-convert "${keymaps}"
+    loadkeys "${keymaps}"
+
+    printf "%s" "${NC}"
+
+    return "${SUCCESS}"
+}
+
+
+check_parted_status()
+{
+    [ "${?}" != "0" ] && cri "Something wrong with parted - If you plan to run install script again, delete first all partitions created before error"
+
+    return "${SUCCESS}"
+}
+
+check_mkfs_status()
+{
+    [ "${?}" != "0" ] && cri "Something wrong with mkfs"
+
+    return "${SUCCESS}"
+}
+
+
+format_partition()
+{
+    default_part="1"
+
+    # cfdisk partitioning
+    wprintf "[+] Create new partitions with cfdisk %s[boot, root and optional Swap]" "${RED}"
+    sleep 5
+    cfdisk "${HD}"
+    [ "${?}" != "0" ] && cri "Error with cfdisk - run install again"
+
+    printf "%s" "${WHITE}"
+
+    # * BOOT
+    printf "    -> Number of the Boot partition created [%s]: " \
+        "${default_part}"; read a;
+    if [ "${a}" != "" ]; then
+        boot_part="${HD}${a}";
+    else
+        boot_part="${HD}${default_part}"
+    fi
+
+    printf "    -> Type of Boot partition [ext2]: "
+    read a; [ "${a}" != "" ] && boot_type="${a}"
+
+    ((default_part++))
+
+    # * SWAP
+    printf "[?] Did you create Swap partition? [y/N]: "; read a
+    if [ "${a}" == "y" ] || [ "${a}" == "Y" ]; then
+        SWAP="true"
+        printf "    -> Number of the Swap partition created [%s]:" \
+            "${default_part}"; read a
+        if [ "${a}" != "" ]; then
+            swap_part="${HD}${a}"
+        else
+            swap_part="${HD}${default_part}"
+        fi
+        ((default_part++))
+    fi
+
+    # * ROOT
+    printf "    -> Number of the Root partition created [%s]: " \
+        "${default_part}"; read a
+    if [ "${a}" != "" ]; then
+        root_part="${HD}${a}"
+    else
+        root_part="${HD}${default_part}"
+    fi
+    printf "    -> Type of Root partition [ext4]: "
+    read a; [ "${a}" != "" ] && boot_type="${a}"
+
+
+    # about to format
+    printf "%s" "${RED}"
+    printf "\n[!!] About to create and format partitions:\n"
+    printf "    -> /boot %s with type %s\n" "${boot_part}" "${boot_type}"
+    "${SWAP}" && printf "    -> Swap  %s with type Swap\n" "${swap_part}"
+    printf "    -> /     %s with type %s\n" "${root_part}" "${root_type}"
+    printf "Are you sure? [y/N]: "; read a
+    [ "${a}" == "y" ] || [ "${a}" == "Y" ] && printf "   - R3ally? ;) \n[y/N]: "; read a
+    printf "%s" "${WHITE}"
+
+    # safety checks
+    umount "${boot_part}" &> /dev/null
+    umount "${root_part}" &> /dev/null
+
+    if [ "${a}" == "y" ] || [ "${a}" == "Y" ]; then
+        # * BOOT
+        "mkfs.${boot_type}" -L boot "${boot_part}"; check_mkfs_status
+        # * ROOT
+        if ${LUKS}; then
+            #Format and encrypt ROOT partition
+            printf "[+] Formatting ROOT partiton, please type your passphrase for encryption: \n"
+            cryptsetup -y -v luksFormat "${root_part}"
+            printf "[+] Openning encrypted partition, re-enter your passphrase: \n"
+            cryptsetup open "${root_part}" cryptroot
+            "mkfs.${root_type}" -L root "/dev/mapper/cryptroot"; check_mkfs_status
+            printf "[+] Created root encrypted partition: /dev/mapper/cryptroot - ext4\n"
+        else
+            "mkfs.${root_type}" -L root "${root_part}"; check_mkfs_status
+            printf "[+] Created root partition: %s - ext4\n" "${root_part}"
+        fi
+        # * SWAP
+        if "${SWAP}"; then mkswap "${swap_part}"; check_mkfs_status; fi
+    else
+        cri "No format no fun"
+    fi
+
+    printf "%s" "${NC}"
+
+    return "${SUCCESS}"
+}
+
+ask_for_luks()
+{
+    printf "%s" "${WHITE}"
+    # user input for luks
+    printf "[+] Do you want full encrypted root? [y/N]: "; read a;
+
+    if [ "${a}" == "y" ] || [ "${a}" == "Y" ]; then
+        LUKS="true"
+	    printf "[!] Root will be encrypted\n"
+    else
+	    printf "[!] Root will NOT be encrypted\n"
+    fi
+
+}
+
+setup_filesystem()
+{
+    printf "%s" "${WHITE}"
+
+    # force user to set device to format
+    unset a
+    while [ -z "${a}" ]; do
+        printf "[+] Type the device for install [/dev/sdX]: " "${HD}"; read a;
+        if [ "${a}" != "" ]; then
+            HD=${a} # sanitize input
+            break
+        fi
+    done
+
+    printf "    -> Hard Drive Selected: %s\n" "${HD}"
+
+    printf "%s" "${NC}"
+
+    return "${SUCCESS}"
+}
+
+mount_filesystem()
+{
+    mkdir -p "${ROOT}"
+    if "${LUKS}"; then
+        # TODO: make /dev/mapper/crytroot variable for later chroot -R
+	    mount -t "${root_type}" /dev/mapper/cryptroot "${ROOT}"
+    else
+	    mount -t "${root_type}" "${root_part}" "${ROOT}"
+    fi
+
+    mkdir -p "${ROOT}/boot"
+    mount -t "${boot_type}" "${boot_part}" "${ROOT}/boot"
+
+    "${SWAP}" && swapon "${swap_part}"
+
+    return "${SUCCESS}"
+}
+
+install_base_packages()
+{
+    wprintf "  --> ArchLinux Base"
+    pacstrap -c "${ROOT}" base
+
+    [ "${?}" != "0" ] && cri "Failed to install ArchLinux base packages"
+
+    return "${SUCCESS}"
+}
+
+install_chroot()
+{
+    mode=${1}
+
+    # setup chroot-install path
+    if [ -f chroot-install ]; then
+        chroot_file="chroot-install"
+    else
+        # we are a blackarch package installed
+        chroot_file="/usr/share/blackarch-install-scripts/chroot-install"
+    fi
+
+    cp "${chroot_file}" "${ROOT}/bin/"
+    mkdir -p ${ROOT}/{proc,sys,dev}
+
+    mount -t proc proc "${ROOT}/proc"
+    mount --rbind /dev "${ROOT}/dev"
+    mount --rbind /sys "${ROOT}/sys"
+
+    chroot "${ROOT}" "/bin/chroot-install" "${mode}" \
+        -D "${HD}" -R "${root_part}" -k "${keymaps}" "$(${LUKS} && printf '%sL' '-')"
+
+    # cleaning up
+    rm -rf "${ROOT}/bin/${chroot_file}"
+
+    return "${SUCCESS}"
+}
+
+# only LIVE mode
+dump_live()
+{
+    t=7 remaining=7;
+    SECONDS=0;
+    while sleep .2; do
+        printf '\r[+] Down the rabbit hole we go '"${RED}$remaining"${NC}' ';
+        if (( (remaining=t-SECONDS) <=0 )); then
+            printf '\rseconds remaining to proceed' 0;
+            break;
+        fi;
+    done
+
+    cp -Rpv /bin /etc /home /lib /lib64 /opt /root /srv /usr /var /tmp "${ROOT}"
+
+    # cleaning files - it will be create later
+    rm -rf "${ROOT}/etc/{group, passwd, shadow*, gshadow*}"
+
+    wprintf "[+] Dump done!"
+
+    return "${SUCCESS}"
+}
+
+install()
+{
+    menu_opt=${1}
+
+    # live flag for update system
+    [ "${menu_opt}" == "${MENU_LIVE}" ] && LIVE="true"
+
+    wprintf "[+] Setting keymaps..."
+    set_keymaps
+
+    wprintf "[+] Updating system..."
+    update_system
+
+    wprintf "[+] Hard drive configuration..."
+    ask_for_luks
+    # set HD and defaults
+    setup_filesystem
+    # start partitioning
+    format_partition
+
+    wprintf "[+] Mounting filesystem..."
+    mount_filesystem
+
+    # if live dump everything
+    [ "${menu_opt}" == "${MENU_LIVE}" ] && dump_live
+
+    wprintf "[+] Installing packages..."
+    install_base_packages
+
+    wprintf "[+] Generating fstab..."
+    genfstab -p "${ROOT}" >> "${ROOT}/etc/fstab"
+
+    # if live not need to do this
+    if [ "${menu_opt}" != "${MENU_LIVE}" ]; then
+        wprintf "[+] Generating pacman.conf"
+        cp -Rf /etc/pacman* "${ROOT}/etc/"
+
+        wprintf "[+] Generating resolv.conf"
+        cp /etc/resolv.conf "${ROOT}/etc/"
+    fi
+
+    wprintf "[+] Setting up grub config..."
+    if [ -d grub ]; then
+        cp grub/splash.png "${ROOT}/boot/"
+    else
+        # we are a blackarch package installed
+        cp /usr/share/blackarch-install-scripts/grub/splash.png "${ROOT}/boot/"
+    fi
+
+    wprintf "[+] Installing chroot system..."
+    if [ -d shell ]; then
+        cp -f shell/etc/issue "${ROOT}/etc/"
+        cp -R shell/ "${ROOT}/mnt/"
+    else
+        cp -f /usr/share/blackarch-install-scripts/shell/etc/issue "${ROOT}/etc/"
+        cp -R /usr/share/blackarch-install-scripts/shell "${ROOT}/mnt/"
+    fi
+    # setup hostname
+    sed -i 's/localhost/blackarch/g' "${ROOT}/etc/hosts"
+
+    case "${menu_opt}" in
+        "${MENU_LIVE}")
+            install_chroot "-l"
+            ;;
+        "${MENU_REPO}")
+            install_chroot "-r"
+            ;;
+        "${MENU_BLACKMAN}")
+            install_chroot "-b"
+            ;;
+    esac
+
+    return "${SUCCESS}"
+}
+
+install_menu()
+{
+    printf "%s" "${WHITE}"
+    while ! [ "${menu_opt}" == "${MENU_LIVE}" \
+           -o "${menu_opt}" == "${MENU_REPO}" \
+           -o "${menu_opt}" == "${MENU_BLACKMAN}" ]; do
+
+        printf "[+] Select Install Mode:\n"
+        printf "    1. Install from Live-ISO.\n"
+        printf "    2. Install from BlackArch Official Repository.\n"
+        printf "    3. Install from Blackman.\n"
+        printf "Make a choice: "; read menu_opt
+    done
+
+    printf "%s" "${NC}"
+
+    return "${SUCCESS}"
+}
+
+
+# parse command line options
+get_opts()
+{
+    while getopts vVH flags
+    do
+        case "${flags}" in
+            v)
+                VERBOSE="/dev/stdout"
+                ;;
+            V)
+                printf "%s\n" "${VERSION}"
+                exit "${SUCCESS}"
+                ;;
+            H)
+                usage
+                ;;
+            *)
+                err "WTF?! mount /dev/brain"
+                ;;
+        esac
+    done
+
+    return "${SUCCESS}"
+}
+
+# controller and program flow
+main()
+{
+    banner
+    check_argc ${*}
+    get_opts ${*}
+    check_args ${*}
+    check_env
+
+    # commented arg opt
+    if [[ "${SEC_ENABLE}" == "false" ]]; then
+        install_menu
+        install "${menu_opt}"
+    else
+        cri "SEC_ENABLE var active - vim blackarch-install"
+    fi
+    return "${SUCCESS}"
+}
+
+
+# program start
+main ${*}
+
+# EOF

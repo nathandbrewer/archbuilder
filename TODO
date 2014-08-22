@@ -1,0 +1,55 @@
+archbuilder Notes -*- mode: org -*-
+
+* archbuilder
+** Purpose
+*** Easily create custom arch distributions from a config file
+*** Easily build entire system from source
+*** Produces a live CD based on your configuration
+*** Ability to install to disk
+** Goals
+*** Version controlled system backups, restores are complete rebuilds
+*** Portable workstation, booting a Live CD will produce a familiar workstation for use anywhere
+*** Can be used to install a minimalist environment
+** dependancies
+*** base-devel
+** operation
+*** --install
+**** Description
+***** Installs custom distrobution to disk
+**** Valid Options
+***** --source
+****** Will parse all packages to be installed, download the required PKGBUILD's and re-build every package
+***** --offline
+****** Will use a local repository or local sources to install
+***** --interactive
+****** Will prompt for basic configuration at time of install, can be used with -c to populate defaults
+***** --local
+****** Will install a copy of the local environment 
+***** --config
+****** Use config file for advanced configurations or unattended installs
+**** Method
+***** Set layout
+***** Create Partitions
+***** Setup Encryption
+***** Mount Partitions
+***** Generate Local Repository
+***** Pacstrap from local repo
+***** copy chroot-install
+***** chroot Install/Configuration
+****** Minimal System Config
+****** Grub
+*** --build
+**** Description
+***** Create a Live ISO containing a custom distribution
+*** --update
+** options
+*** --local
+**** Uses copy of the running system to disk
+*** --source, -s
+*** --offline, -o
+*** --pkglist-only, -P
+*** --conf-only, -C
+*** --interactive, -i
+*** --config, -c
+*** --local, -l
+*** --repo-only, -R
